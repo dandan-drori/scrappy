@@ -29,3 +29,47 @@ Before setting up the project, make sure you have:
    ```bash
    git clone <repository-url>
    cd <repository-folder>
+
+2. Install dependencies:
+  ```bash
+  npm i
+
+## Configuration
+
+1. Create a `.env` file in the root directory:
+  ```bash
+  touch .env
+
+2. Add your configuration values to .env:
+```text
+# Yad2 search results URL (with all your desired filters applied)
+YAD2_FILTER_URL=[https://www.yad2.co.il/realestate/rent/center-and-sharon?property=1&minRooms=4&maxRooms=4&minPrice=5000&maxPrice=8000&minFloor=1&priceOnly=1&parking=1&elevator=1](https://www.yad2.co.il/realestate/rent/center-and-sharon?property=1&minRooms=4&maxRooms=4&minPrice=5000&maxPrice=8000&minFloor=1&priceOnly=1&parking=1&elevator=1)
+
+# Telegram Credentials
+TELEGRAM_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyZ
+TELEGRAM_CHAT_ID=-1001234567890
+
+## Telegram Setup Guide
+1. Create a Bot
+Open Telegram and search for @BotFather.
+
+Send /newbot and follow the instructions to choose a name and username for your bot.
+
+Copy the HTTP API Token provided (e.g., 123456789:ABCdef...).
+
+2. Get Your Chat ID
+Add your bot to a Telegram group/channel or send it a direct message.
+
+Send a message to the bot or group.
+
+Fetch your Chat ID by visiting the following URL in your browser:
+```text
+[https://api.telegram.org/bot](https://api.telegram.org/bot)<YOUR_TELEGRAM_TOKEN>/getUpdate
+
+## Usage
+
+Run the Scraper Once
+Execute the main script directly:
+
+```bash
+node scraper.js
