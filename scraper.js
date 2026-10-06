@@ -1,20 +1,47 @@
-require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const TelegramBot = require('node-telegram-bot-api');
+import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
 puppeteer.use(StealthPlugin());
 
-const token = process.env.TELEGRAM_TOKEN;
-const chatId = process.env.TELEGRAM_CHAT_ID;
-const bot = new TelegramBot(token, { polling: false });
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const TARGET_URL = process.env.YAD2_FILTER_URL;
+const TARGET_URL = process.env.YAD2_FILTER_URL || 'https://www.yad2.co.il/realestate/forsale';
 const STATE_FILE = path.join(__dirname, 'state.json');
 
-// Read previous execution state
+const CARD_SELECTOR = 'ul[data-testid="feed-list"] > li';
+
+async function sendTelegramMessage(text) {
+  const token = process.env.TELEGRAM_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+
+  if (!token || !chatId) {
+    console.error('Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID in environment variables.');
+    return;
+  }
+
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'Markdown',
+      link_preview_options: { is_disabled: true }
+    })
+  });
+
+  if (!response.ok) {
+    const errData = await response.json();
+    throw new Error(`Telegram API Error: ${errData.description}`);
+  }
+}
+
 function loadState() {
   if (fs.existsSync(STATE_FILE)) {
     try {
@@ -30,7 +57,6 @@ function loadState() {
   return { count: 0, seenIds: new Set() };
 }
 
-// Save current execution state
 function saveState(count, seenIdsSet) {
   const data = {
     count,
@@ -61,58 +87,101 @@ async function runScraper() {
   );
 
   try {
+    console.log(`Navigating to ${TARGET_URL}...`);
     await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // Wait for the feed container
-    const itemSelector = '[data-testid="feed-item"], .feed_item, .feeditem';
-    await page.waitForSelector(itemSelector, { timeout: 25000 });
+    console.log('Waiting for feed list...');
+    await page.waitForSelector('ul[data-testid="feed-list"]', { timeout: 35000 });
 
-    // Extract items currently matching the filter
-    // Target selector specifically for valid listing items from the DOM screenshot
-    const ITEM_SELECTORS = [
-      '[data-testid="platinum-item"]',
-      '[data-testid="item-basic"]',
-      '[data-testid="agency-item"]'
-    ].join(',');
+    console.log('Scrolling page to trigger lazy-loaded listings...');
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        const distance = 400;
+        const timer = setInterval(() => {
+          const scrollHeight = document.body.scrollHeight;
+          window.scrollBy(0, distance);
+          totalHeight += distance;
 
-      // Inside your page.evaluate() call:
-      const currentListings = await page.evaluate((selector) => {
-      const elements = Array.from(document.querySelectorAll(selector));
-    
-      return elements.map(el => {
-        // Standard inner selectors or fallback text extractions
-        const titleEl = el.querySelector('[data-testid="feed-item-title"], h2, h3, .title');
-        const priceEl = el.querySelector('[data-testid="feed-item-price"], .price');
-        const subtitleEl = el.querySelector('[data-testid="feed-item-subtitle"], .subtitle, .description');
-        const linkEl = el.querySelector('a[href*="/item/"]');
-    
-        const title = titleEl?.innerText?.trim() || 'No Title';
-        const price = priceEl?.innerText?.trim() || 'No Price';
-        const details = subtitleEl?.innerText?.trim() || '';
+          if (totalHeight >= scrollHeight || totalHeight > 8000) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, 200);
+      });
+    });
+
+    await new Promise(r => setTimeout(r, 2000));
+
+    const rawListings = await page.evaluate((selector) => {
+      const items = Array.from(document.querySelectorAll(selector));
+
+      return items.map((el, index) => {
+        const priceEl = 
+          el.querySelector('[data-testid="price"]') || 
+          el.querySelector('[data-testid="ad-card-price"] [data-testid="price"]') ||
+          el.querySelector('[data-testid="ad-card-price"]');
+
+        const titleEl = 
+          el.querySelector('[data-nagish="content-section-title"]') || 
+          el.querySelector('h2[data-nagish="content-section-title"]') ||
+          el.querySelector('[data-testid="feed-item-title"]') ||
+          el.querySelector('h2, h3, .title');
+
+        const detailsEl = 
+          el.querySelector('[data-testid="ad-card-details"]') ||
+          el.querySelector('[data-testid="feed-item-subtitle"]') ||
+          el.querySelector('.subtitle');
+
+        const linkEl = 
+          el.querySelector('a[data-nagish="feed-item-layout-link"]') ||
+          el.querySelector('a[href*="/item/"]') ||
+          el.querySelector('a[href*="/realestate/item/"]') ||
+          el.querySelector('a');
+
+        const price = priceEl?.innerText?.trim() || '';
+        const title = titleEl?.innerText?.trim() || '';
+        const details = detailsEl?.innerText?.trim() || '';
         const href = linkEl?.getAttribute('href') || '';
-    
-        // Extract unique listing ID from href or fallback to content hash
-        const idMatch = href.match(/item\/([a-zA-Z0-9]+)/);
-        const id = idMatch ? idMatch[1] : (title + price).replace(/\s+/g, '_');
+
+        const idMatch = href.match(/item\/([a-zA-Z0-9_-]+)/);
+        const id = idMatch ? idMatch[1] : null;
         const link = href ? (href.startsWith('http') ? href : `https://www.yad2.co.il${href}`) : '';
 
-        return { id, title, price, details, link };
+        return { id, title: title || 'Real Estate Listing', price: price || 'Price on request', details, link, rawIndex: index };
       });
-    }, ITEM_SELECTORS);	
+    }, CARD_SELECTOR);
 
+    const uniqueListingsMap = new Map();
+
+    for (const item of rawListings) {
+      let uniqueKey = item.id;
+
+      if (!uniqueKey) {
+        if (item.title !== 'Real Estate Listing' || item.details !== '') {
+          uniqueKey = `${item.title}_${item.details}_${item.price}`.replace(/\s+/g, '_');
+        } else {
+          uniqueKey = `item_index_${item.rawIndex}`;
+        }
+      }
+
+      if (!uniqueListingsMap.has(uniqueKey)) {
+        uniqueListingsMap.set(uniqueKey, { ...item, id: uniqueKey });
+      }
+    }
+
+    const currentListings = Array.from(uniqueListingsMap.values());
     const currentCount = currentListings.length;
     const countDiff = currentCount - prevState.count;
 
+    console.log(`Extracted ${rawListings.length} raw cards -> ${currentCount} unique listings.`);
     console.log(`Previous Count: ${prevState.count} | Current Count: ${currentCount} | Net Diff: ${countDiff}`);
 
-    // Identify brand-new listings that weren't in the seenIds set
     const brandNewItems = currentListings.filter(item => item.id && !prevState.seenIds.has(item.id));
 
-    // Update seen IDs set with all current items
     const updatedSeenIds = new Set(prevState.seenIds);
     currentListings.forEach(item => updatedSeenIds.add(item.id));
 
-    // TRIGGER LOGIC: Notify ONLY if the match count has increased
     if (countDiff > 0) {
       console.log(`Count increased by ${countDiff}. Sending Telegram notification...`);
 
@@ -120,7 +189,7 @@ async function runScraper() {
       message += `• *Total Matches:* ${currentCount} (was ${prevState.count}, +${countDiff})\n`;
       message += `• 🔗 [View All Filtered Results](${TARGET_URL})\n\n`;
 
-      if (brandNewItems.length > 0) {
+if (brandNewItems.length > 0) {
         message += `✨ *Newly Added Listing${brandNewItems.length > 1 ? 's' : ''}:*\n`;
         message += `------------------------------------\n`;
 
@@ -128,24 +197,20 @@ async function runScraper() {
           message += `\n${index + 1}. 🏠 *${item.title}*\n`;
           message += `   💰 *Price:* ${item.price}\n`;
           if (item.details) message += `   📍 *Details:* ${item.details}\n`;
-          message += `   🔗 [Direct Link](${item.link})\n`;
+          if (item.link) message += `   🔗 [Direct Link](${item.link})\n`;
         });
       }
 
-      await bot.sendMessage(chatId, message, {
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true
-      });
+      await sendTelegramMessage(message);
     } else {
       console.log('No net increase in listing count. Notification skipped.');
     }
 
-    // Save updated state for the next run
     saveState(currentCount, updatedSeenIds);
 
   } catch (err) {
     console.error('Error during execution:', err.message);
-    await bot.sendMessage(chatId, `⚠️ *Yad2 Monitor Error:* ${err.message}`, { parse_mode: 'Markdown' });
+    await sendTelegramMessage(`⚠️ *Yad2 Monitor Error:* ${err.message}`);
   } finally {
     await browser.close();
   }
