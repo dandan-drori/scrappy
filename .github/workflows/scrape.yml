@@ -3,7 +3,7 @@ name: Yad2 Count Monitor
 on:
   schedule:
     # Runs twice daily at 08:00 and 20:00 UTC
-    - cron: '0 8,20 * * *'
+    # - cron: '0 8,20 * * *'
   workflow_dispatch:
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           YAD2_FILTER_URL: ${{ secrets.YAD2_FILTER_URL }}
-        run: node scraper.js
+        # run: node scraper.js
 
       - name: Save State Cache
         uses: actions/cache/save@v4
